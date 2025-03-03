@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  api_gateway:
+    build: .
+    ports:
+      - "8443:8443"
+    environment:
+      # Environment variables can also be set here or loaded from the .env file.
+      - DATABASE_URL=sqlite:///app.db
+      - JWT_SECRET=supersecret
+      - ENV=development
+    volumes:
+      # Mount the current directory into the container (useful for development).
+      - .:/app
+
