@@ -9,14 +9,16 @@ from models import db, bcrypt, User
 
 # Import security middlewares
 from middlewares.request_response_logger import log_request, log_response
-from middlewares.threat_detection import detect_vulnerabilities
 from middlewares.crypto_audit_logger import crypto_audit_logger
-from middlewares.ip_reputation import ip_reputation  # Ensure this function is defined as ip_reputation in ip_reputation.py
+from middlewares.threat_detection import detect_vulnerabilities
+from middlewares.ip_reputation import ip_reputation  
 from middlewares.jwt_oauth_validator import jwt_oauth_validator
 from middlewares.ml_anomaly_detection import ml_anomaly_detection
-from middlewares.security_headers import security_headers
+from middlewares.security_headers import security_headers  # ✅ Import security headers
 from middlewares.waf_rules import waf_rules
-from middlewares.rate_limiter import limiter
+
+# Import rate limiter
+from middlewares.rate_limiter import limiter, check_blocked_ips
 
 # Load environment variables
 load_dotenv()
@@ -27,7 +29,7 @@ CORS(app)  # Enable CORS for all routes
 # Configure database using an environment variable
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL", "sqlite:///app.db")
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET", "supersecret")  # Change in production
+app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET", "supersecret")  
 
 # Initialize extensions
 db.init_app(app)
@@ -38,24 +40,26 @@ limiter.init_app(app)  # Register rate limiter
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
-# Global before_request middleware with error handling
+# ✅ Middleware Order: LOGGING → SECURITY → RATE LIMITING
 @app.before_request
 def run_middlewares():
     try:
-        # Log incoming request and perform audit logging
+        # Step 1: Log the request (Must be first to ensure no tampering)
         log_request()
-        crypto_audit_logger()
+        crypto_audit_logger()  
+
+        # Step 2: Run security checks
         waf_rules()
-        
-        # Run IP reputation first to update the score, even if threat detection later aborts the request
         ip_reputation()
-        
-        # Then perform threat detection on the URL (this may abort if vulnerabilities are detected)
         detect_vulnerabilities(request.url)
-        
-        # Continue with JWT validation and anomaly detection
         jwt_oauth_validator()
         ml_anomaly_detection()
+
+        # Step 3: Apply Rate Limiting (Runs last)
+        ip_check = check_blocked_ips()
+        if ip_check:
+            return ip_check  # Return error response if blocked
+
     except Exception as e:
         logging.error(f"Middleware error: {str(e)}")
         return jsonify({"error": f"Middleware error: {str(e)}"}), 500
@@ -63,8 +67,8 @@ def run_middlewares():
 # Global after_request middleware for response logging and security headers
 @app.after_request
 def apply_security_headers(response):
-    response = security_headers(response)
-    response = log_response(response)
+    response = security_headers(response)  # ✅ Apply security headers
+    response = log_response(response)  # ✅ Log response
     return response
 
 # User Registration Endpoint
@@ -103,20 +107,29 @@ def home():
     return redirect(url_for('login'))
 
 # Secure API Route (Requires JWT Authentication)
+# Secure API Route (Requires JWT Authentication)
+# Secure API Route (Requires JWT Authentication)
 @app.route('/api/echo', methods=['GET'])
 @jwt_required()
+@limiter.limit("20 per minute")  # Apply rate limiting
 def echo():
     current_user = get_jwt_identity()
-    url_param = request.args.get('url')
-    if not url_param:
-        return jsonify({"error": "Missing URL parameter"}), 400
-    logging.debug(f"Received URL: {url_param}")
+    url_param = request.args.get('url')  # Optional parameter
     
-    # Optionally, you can perform additional threat detection on the URL parameter.
-    if detect_vulnerabilities(url_param):
-        return jsonify({"error": "Potential threat detected in URL"}), 403
+    if url_param:
+        logging.debug(f"Received URL: {url_param}")
+        if detect_vulnerabilities(url_param):
+            return jsonify({"error": "Potential threat detected in URL"}), 403
 
-    return jsonify({"user": current_user, "requested_url": url_param}), 200
+    # ✅ Fetch all users from DB
+    users = User.query.all()
+    user_list = [{"id": user.id, "username": user.username} for user in users]  # Simple serialization
+
+    # ✅ Return users list
+    return jsonify({
+        "current_user": current_user,
+        "user_list": user_list
+    }), 200
 
 # Initialize Database (create all tables)
 with app.app_context():
@@ -125,7 +138,6 @@ with app.app_context():
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 8443))
     
-    # SSL Configuration with security enhancements
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     context.load_cert_chain(certfile='certs/server.crt', keyfile='certs/server.key')
     context.load_verify_locations(cafile='certs/ca.crt')
@@ -136,4 +148,5 @@ if __name__ == '__main__':
         context.verify_mode = ssl.CERT_NONE
 
     app.run(host='0.0.0.0', port=port, ssl_context=context, threaded=True)
+
 
